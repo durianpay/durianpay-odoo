@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#1a7f4b"/>
+  <circle cx="64" cy="64" r="34" fill="#f4e04d" stroke="#0f5c34" stroke-width="4"/>
+  <g fill="#0f5c34">
+    <path d="M64 22 l5 10 -10 0 z"/>
+  </g>
+  <text x="64" y="78" font-family="Arial, sans-serif" font-size="34" font-weight="bold" text-anchor="middle" fill="#0f5c34">DP</text>
+</svg>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <record id="payment_provider_durianpay" model="payment.provider">
+        <field name="name">Durianpay</field>
+        <field name="code">durianpay</field>
+        <field name="redirect_form_view_id" ref="redirect_form"/>
+        <field name="image_128" type="base64" file="payment_durianpay_18/static/description/icon.png"/>
+        <!-- Link the supported payment methods so the provider is offered at checkout. -->
+        <field name="payment_method_ids"
+               eval="[(6, 0, [
+                   ref('payment.payment_method_card'),
+                   ref('payment.payment_method_qris'),
+                   ref('payment.payment_method_dana'),
+                   ref('payment.payment_method_ovo'),
+                   ref('payment.payment_method_shopeepay'),
+               ])]"
+        />
+    </record>
+
+</odoo>

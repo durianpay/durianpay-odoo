@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="payment_provider_form_durianpay" model="ir.ui.view">
+        <field name="name">Durianpay Provider Form</field>
+        <field name="model">payment.provider</field>
+        <field name="inherit_id" ref="payment.payment_provider_form"/>
+        <field name="arch" type="xml">
+            <group name="provider_credentials" position="inside">
+                <group invisible="code != 'durianpay'">
+                    <field
+                        name="durianpay_secret_key"
+                        string="Secret Key"
+                        required="code == 'durianpay' and state != 'disabled'"
+                        password="True"
+                    />
+                    <field
+                        name="durianpay_api_url"
+                        string="API URL"
+                        placeholder="https://api.durianpay.id"
+                    />
+                    <field
+                        name="durianpay_link_base_url"
+                        string="Payment Link Base URL"
+                        placeholder="https://links.durianpay.id/payment/"
+                    />
+                    <field
+                        name="durianpay_webhook_type"
+                        string="Webhook Type"
+                        required="code == 'durianpay' and state != 'disabled'"
+                    />
+                    <field
+                        name="durianpay_snap_public_key"
+                        string="SNAP Public Key"
+                        invisible="durianpay_webhook_type != 'snap'"
+                        required="code == 'durianpay' and durianpay_webhook_type == 'snap' and state != 'disabled'"
+                        placeholder="-----BEGIN PUBLIC KEY-----&#10;...&#10;-----END PUBLIC KEY-----"
+                    />
+                </group>
+            </group>
+        </field>
+    </record>
+
+</odoo>
