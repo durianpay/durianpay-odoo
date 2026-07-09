@@ -2,12 +2,13 @@
 
 import logging
 import pprint
+import re
 
 from odoo import _, models
 from odoo.exceptions import ValidationError
 from odoo.tools import float_round
 
-from odoo.addons.payment_durianpay_18 import const
+from odoo.addons.payment_durianpay import const
 
 
 _logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class PaymentTransaction(models.Model):
         _logger.info(
             "Sending order request for payment link creation:\n%s", pprint.pformat(payload)
         )
-        order_data = self.provider_id._durianpay_make_request('v1/orders', payload=payload)
+        order_data = self._send_api_request('POST', 'v1/orders', json=payload)
         _logger.info("Received order request response:\n%s", pprint.pformat(order_data))
 
         data = order_data.get('data', order_data)
@@ -50,6 +51,7 @@ class PaymentTransaction(models.Model):
             raise ValidationError(
                 "Durianpay: " + _("The API did not return a payment link URL.")
             )
+
         return {
             'api_url': payment_link,
         }
@@ -71,7 +73,7 @@ class PaymentTransaction(models.Model):
         }
         if self.partner_email:
             customer['email'] = self.partner_email
-        if phone := self.partner_id.mobile or self.partner_id.phone:
+        if phone := self._durianpay_format_phone(self.partner_phone):
             customer['mobile'] = phone
 
         payload = {
@@ -83,68 +85,86 @@ class PaymentTransaction(models.Model):
         }
         return payload
 
-    def _get_tx_from_notification_data(self, provider_code, notification_data):
-        """ Override of `payment` to find the transaction based on the notification data.
+    @staticmethod
+    def _durianpay_format_phone(phone):
+        """ Strip formatting characters Durianpay rejects (notably the leading `+`).
 
-        :param str provider_code: The code of the provider that handled the transaction.
-        :param dict notification_data: The notification data sent by the provider.
-        :return: The transaction if found.
-        :rtype: payment.transaction
-        :raise ValidationError: If the data match no transaction.
+        Keeps only the digits (removing `+`, spaces, dashes, parentheses). Returns False when
+        nothing usable remains so the optional field is omitted instead of failing validation.
+
+        :param str phone: The raw phone number.
+        :return: The digits-only phone number, or False.
+        :rtype: str | bool
         """
-        tx = super()._get_tx_from_notification_data(provider_code, notification_data)
-        if provider_code != 'durianpay' or len(tx) == 1:
-            return tx
+        if not phone:
+            return False
+        return re.sub(r'\D', '', phone) or False
 
-        # Legacy webhooks carry `order_ref_id` (the Odoo reference); SNAP callbacks carry
-        # `trx_id`, which is reconciled against the stored provider reference.
-        reference = notification_data.get('order_ref_id')
+    def _search_by_reference(self, provider_code, payment_data):
+        """ Override of `payment` to find the transaction based on the payment data.
+
+        Legacy webhooks carry `order_ref_id` (the Odoo reference); SNAP callbacks carry
+        `trx_id`, which is reconciled against the stored provider reference.
+
+        :param str provider_code: The code of the provider handling the transaction.
+        :param dict payment_data: The payment data sent by the provider.
+        :return: The transaction, if found.
+        :rtype: payment.transaction
+        """
+        if provider_code != 'durianpay':
+            return super()._search_by_reference(provider_code, payment_data)
+
+        reference = payment_data.get('order_ref_id')
         if reference:
             tx = self.search([('reference', '=', reference), ('provider_code', '=', 'durianpay')])
         else:
-            provider_reference = notification_data.get('trx_id') or notification_data.get(
+            provider_reference = payment_data.get('trx_id') or payment_data.get(
                 'provider_reference'
             )
             if not provider_reference:
-                raise ValidationError(
-                    "Durianpay: " + _("Received data with missing reference.")
-                )
+                _logger.warning("Received Durianpay data with missing reference.")
+                return self
             tx = self.search([
                 ('provider_reference', '=', provider_reference),
                 ('provider_code', '=', 'durianpay'),
             ])
         if not tx:
-            raise ValidationError(
-                "Durianpay: " + _(
-                    "No transaction found matching reference %s.",
-                    reference or notification_data.get('trx_id'),
-                )
+            _logger.warning(
+                "No Durianpay transaction found matching reference %s.",
+                reference or payment_data.get('trx_id'),
             )
         return tx
 
-    def _process_notification_data(self, notification_data):
-        """ Override of `payment` to process the transaction based on Durianpay data.
+    def _extract_amount_data(self, payment_data):
+        """ Override of `payment` to opt out of the generic amount validation.
+
+        The Durianpay notification does not reliably carry the currency, so the amount check is
+        skipped (returning `None` tells the framework to skip it); reconciliation still verifies
+        the amount against the invoice.
+        """
+        if self.provider_code != 'durianpay':
+            return super()._extract_amount_data(payment_data)
+        return None
+
+    def _apply_updates(self, payment_data):
+        """ Override of `payment` to update the transaction based on the payment data.
 
         Note: self.ensure_one()
 
-        :param dict notification_data: The notification data sent by the provider.
+        :param dict payment_data: The payment data sent by the provider.
         :return: None
-        :raise ValidationError: If inconsistent data were received.
         """
-        self.ensure_one()
-
-        super()._process_notification_data(notification_data)
         if self.provider_code != 'durianpay':
-            return
+            return super()._apply_updates(payment_data)
 
         # Update the provider reference with the Durianpay payment/order id.
-        self.provider_reference = notification_data.get('id') or self.provider_reference
+        self.provider_reference = payment_data.get('id') or self.provider_reference
 
         # Resolve the target state from the webhook event, falling back to the status field.
-        event = notification_data.get('event')
+        event = payment_data.get('event')
         target_state = const.PAYMENT_EVENT_MAPPING.get(event)
         if not target_state:
-            payment_status = (notification_data.get('status') or '').lower()
+            payment_status = (payment_data.get('status') or '').lower()
             for state, statuses in const.PAYMENT_STATUS_MAPPING.items():
                 if payment_status in statuses:
                     target_state = state
@@ -157,9 +177,7 @@ class PaymentTransaction(models.Model):
         elif target_state == 'cancel':
             self._set_canceled()
         elif target_state == 'error':
-            failure_reason = notification_data.get('failure_reason') or notification_data.get(
-                'message'
-            )
+            failure_reason = payment_data.get('failure_reason') or payment_data.get('message')
             self._set_error(_(
                 "An error occurred during the processing of your payment (%s). Please try again.",
                 failure_reason,
@@ -167,5 +185,5 @@ class PaymentTransaction(models.Model):
         else:
             _logger.warning(
                 "Received Durianpay notification with unhandled status for transaction %s:\n%s",
-                self.reference, pprint.pformat(notification_data),
+                self.reference, pprint.pformat(payment_data),
             )

@@ -13,6 +13,11 @@ CURRENCY_DECIMALS = {
     'IDR': 0,
 }
 
+# The default Durianpay API base URLs, selected by the secret key's `dp_test` prefix.
+# Both are overridable per provider via `durianpay_api_url`.
+DEFAULT_API_URL = 'https://api.durianpay.id'
+DEFAULT_SANDBOX_API_URL = 'https://api-sandbox.durianpay.id'
+
 # The default base domain serving hosted payment links when the API returns a bare code.
 # Overridable per provider via `durianpay_link_base_url`.
 DEFAULT_LINK_BASE_URL = 'https://links.durianpay.id/payment/'

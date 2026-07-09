@@ -7,20 +7,31 @@ from odoo.tests import tagged
 from odoo.tools import mute_logger
 
 from odoo.addons.payment.tests.http_common import PaymentHttpCommon
-from odoo.addons.payment_durianpay_18 import const
-from odoo.addons.payment_durianpay_18.controllers.main import DurianpayController
-from odoo.addons.payment_durianpay_18.tests.common import DurianpayCommon
+from odoo.addons.payment_durianpay import const
+from odoo.addons.payment_durianpay.controllers.main import DurianpayController
+from odoo.addons.payment_durianpay.models.payment_transaction import PaymentTransaction
+from odoo.addons.payment_durianpay.tests.common import DurianpayCommon
 
 
-# Odoo 18: API calls go through _durianpay_make_request on the provider model.
-_MAKE_REQUEST = (
-    'odoo.addons.payment_durianpay_18.models.payment_provider.PaymentProvider._durianpay_make_request'
+# Base-class paths for methods defined by the `payment` framework (not by this module); they must
+# be patched at their definition site, as Odoo assembles the concrete model class at runtime.
+_SEND_API_REQUEST = (
+    'odoo.addons.payment.models.payment_transaction.PaymentTransaction._send_api_request'
 )
+_PROCESS = 'odoo.addons.payment.models.payment_transaction.PaymentTransaction._process'
 
-# Base-class path for `_handle_notification_data` defined by the `payment` framework (Odoo 18).
-_HANDLE_NOTIFICATION_DATA = (
-    'odoo.addons.payment.models.payment_transaction.PaymentTransaction._handle_notification_data'
-)
+
+class _DummyResponse:
+    """ Minimal stand-in for a `requests.Response` for error-parsing tests. """
+
+    def __init__(self, body, text=None):
+        self._body = body
+        self.text = text if text is not None else str(body)
+
+    def json(self):
+        if isinstance(self._body, ValueError):
+            raise self._body
+        return self._body
 
 
 @tagged('post_install', '-at_install')
@@ -41,12 +52,19 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         self.assertEqual(payload['customer']['given_name'], tx.partner_name)
         self.assertEqual(payload['customer']['email'], tx.partner_email)
 
+    def test_phone_formatting_strips_special_characters(self):
+        """ Test that the phone number is reduced to its digits, or omitted when empty. """
+        self.assertEqual(PaymentTransaction._durianpay_format_phone('+62 812-3456'), '628123456')
+        self.assertEqual(PaymentTransaction._durianpay_format_phone('(021) 555 0173'), '0215550173')
+        self.assertFalse(PaymentTransaction._durianpay_format_phone('   '))
+        self.assertFalse(PaymentTransaction._durianpay_format_phone(None))
+
     # === TESTS: RENDERING VALUES === #
 
     def test_rendering_values_return_payment_link(self):
         """ Test that the rendering values expose the hosted payment link and store the order id. """
         tx = self._create_transaction(flow='redirect')
-        with patch(_MAKE_REQUEST, return_value=self.order_response):
+        with patch(_SEND_API_REQUEST, return_value=self.order_response):
             rendering_values = tx._get_specific_rendering_values(None)
 
         self.assertEqual(
@@ -58,7 +76,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         """ Test that a bare link code is prefixed with the configured base URL. """
         tx = self._create_transaction(flow='redirect')
         with patch(
-            _MAKE_REQUEST,
+            _SEND_API_REQUEST,
             return_value={'data': {'id': self.provider_reference, 'payment_link_url': 'abc123'}},
         ):
             rendering_values = tx._get_specific_rendering_values(None)
@@ -71,7 +89,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
     def test_rendering_values_without_link_raises(self):
         """ Test that a missing payment link in the response raises a ValidationError. """
         tx = self._create_transaction(flow='redirect')
-        with patch(_MAKE_REQUEST, return_value={'data': {'id': 'ord_1'}}):
+        with patch(_SEND_API_REQUEST, return_value={'data': {'id': 'ord_1'}}):
             with self.assertRaises(ValidationError):
                 tx._get_specific_rendering_values(None)
 
@@ -90,50 +108,82 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         )
 
     def test_api_url_selection(self):
-        """ Test the resolution of the API URL based on the key prefix. """
+        """ Test the resolution of the API URL based on the key prefix and the override. """
         # `dp_test`-prefixed key targets the sandbox.
         self.provider.durianpay_secret_key = 'dp_test_key'
-        self.assertEqual(self.provider._durianpay_get_api_url(), 'https://api-sandbox.durianpay.id')
+        self.provider.durianpay_api_url = False
+        self.assertEqual(self.provider._durianpay_get_api_url(), const.DEFAULT_SANDBOX_API_URL)
 
         # A live key targets production.
         self.provider.durianpay_secret_key = 'dp_live_key'
-        self.assertEqual(self.provider._durianpay_get_api_url(), 'https://api.durianpay.id')
+        self.assertEqual(self.provider._durianpay_get_api_url(), const.DEFAULT_API_URL)
 
-    # === TESTS: GET TX FROM NOTIFICATION DATA === #
+        # An explicit override takes precedence and is stripped of its trailing slash.
+        self.provider.durianpay_api_url = 'https://proxy.example.com/'
+        self.assertEqual(self.provider._durianpay_get_api_url(), 'https://proxy.example.com')
 
-    def test_get_tx_from_notification_data_legacy(self):
+    def test_build_request_url_and_auth(self):
+        """ Test the request hooks used by the framework's `_send_api_request`. """
+        self.provider.durianpay_secret_key = 'dp_test_key'
+        self.provider.durianpay_api_url = False
+        self.assertEqual(
+            self.provider._build_request_url('v1/orders'),
+            f'{const.DEFAULT_SANDBOX_API_URL}/v1/orders',
+        )
+        self.assertEqual(self.provider._build_request_auth(), ('dp_test_key', ''))
+
+    def test_extract_error_handles_multiple_shapes(self):
+        """ Test that the error extractor copes with the various Durianpay error formats. """
+        extract = self.provider._durianpay_extract_error
+        self.assertEqual(
+            extract(_DummyResponse({'error': {'message': 'boom'}})), 'boom'
+        )
+        self.assertEqual(
+            extract(_DummyResponse({'error': {'description': 'desc'}})), 'desc'
+        )
+        self.assertEqual(
+            extract(_DummyResponse({'errors': ['field a invalid', 'field b invalid']})),
+            'field a invalid; field b invalid',
+        )
+        self.assertEqual(extract(_DummyResponse({'message': 'msg'})), 'msg')
+        self.assertEqual(extract(_DummyResponse('plain string error')), 'plain string error')
+        self.assertEqual(
+            extract(_DummyResponse(ValueError(), text='raw text')), 'raw text'
+        )
+
+    # === TESTS: SEARCH BY REFERENCE === #
+
+    def test_search_by_reference_legacy(self):
         """ Test that a legacy notification finds the transaction by its Odoo reference. """
         tx = self._create_transaction(flow='redirect')
-        found = self.env['payment.transaction']._get_tx_from_notification_data(
+        found = self.env['payment.transaction']._search_by_reference(
             'durianpay', {'order_ref_id': tx.reference}
         )
         self.assertEqual(found, tx)
 
-    def test_get_tx_from_notification_data_snap(self):
+    def test_search_by_reference_snap(self):
         """ Test that a SNAP notification finds the transaction by its provider reference. """
         tx = self._create_transaction(flow='redirect', provider_reference=self.provider_reference)
-        found = self.env['payment.transaction']._get_tx_from_notification_data(
+        found = self.env['payment.transaction']._search_by_reference(
             'durianpay', {'trx_id': self.provider_reference}
         )
         self.assertEqual(found, tx)
 
-    @mute_logger('odoo.addons.payment_durianpay_18.models.payment_transaction')
-    def test_get_tx_from_notification_data_missing_raises(self):
-        """ Test that an unmatched reference raises a ValidationError. """
-        with self.assertRaises(ValidationError):
-            self.env['payment.transaction']._get_tx_from_notification_data(
+    @mute_logger('odoo.addons.payment_durianpay.models.payment_transaction')
+    def test_search_by_reference_missing_returns_empty(self):
+        """ Test that an unmatched/missing reference returns an empty recordset (no raise). """
+        self.assertFalse(
+            self.env['payment.transaction']._search_by_reference('durianpay', {})
+        )
+        self.assertFalse(
+            self.env['payment.transaction']._search_by_reference(
                 'durianpay', {'order_ref_id': 'does-not-exist'}
             )
+        )
 
-    @mute_logger('odoo.addons.payment_durianpay_18.models.payment_transaction')
-    def test_get_tx_from_notification_data_missing_reference_raises(self):
-        """ Test that missing reference fields raise a ValidationError. """
-        with self.assertRaises(ValidationError):
-            self.env['payment.transaction']._get_tx_from_notification_data('durianpay', {})
+    # === TESTS: APPLY UPDATES === #
 
-    # === TESTS: PROCESS NOTIFICATION DATA === #
-
-    def test_process_notification_data_sets_states_from_event(self):
+    def test_apply_updates_sets_states_from_event(self):
         """ Test that the transaction state is resolved from the webhook event. """
         cases = {
             'payment.completed': 'done',
@@ -143,17 +193,17 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         }
         for event, expected_state in cases.items():
             tx = self._create_transaction(flow='redirect', reference=f'tx-{event}')
-            tx._process_notification_data({'event': event, 'id': self.provider_reference})
+            tx._apply_updates({'event': event, 'id': self.provider_reference})
             self.assertEqual(tx.state, expected_state)
 
-    def test_process_notification_data_falls_back_to_status(self):
+    def test_apply_updates_falls_back_to_status(self):
         """ Test that the state falls back to the `status` field when no event is mapped. """
         tx = self._create_transaction(flow='redirect', reference='tx-status-done')
-        tx._process_notification_data({'status': 'settled'})
+        tx._apply_updates({'status': 'settled'})
         self.assertEqual(tx.state, 'done')
 
         tx_pending = self._create_transaction(flow='redirect', reference='tx-status-pending')
-        tx_pending._process_notification_data({'status': 'initiated'})
+        tx_pending._apply_updates({'status': 'initiated'})
         self.assertEqual(tx_pending.state, 'pending')
 
     # === TESTS: WEBHOOK NORMALIZATION === #
@@ -179,7 +229,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
     # === TESTS: WEBHOOK (HTTP) === #
 
     @mute_logger(
-        'odoo.addons.payment_durianpay_18.controllers.main',
+        'odoo.addons.payment_durianpay.controllers.main',
         'odoo.addons.payment.models.payment_transaction',
     )
     def test_legacy_webhook_confirms_transaction(self):
@@ -189,7 +239,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         self._make_json_request(url, data=self.legacy_payment_data)
         self.assertEqual(tx.state, 'done')
 
-    @mute_logger('odoo.addons.payment_durianpay_18.controllers.main')
+    @mute_logger('odoo.addons.payment_durianpay.controllers.main')
     def test_snap_webhook_triggers_signature_check(self):
         """ Test that a SNAP callback triggers the RSA signature verification. """
         self.provider.durianpay_webhook_type = 'snap'
@@ -197,6 +247,6 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         url = self._build_url(DurianpayController._webhook_url)
         with patch.object(
             DurianpayController, '_verify_snap_signature',
-        ) as signature_check_mock, patch(_HANDLE_NOTIFICATION_DATA):
+        ) as signature_check_mock, patch(_PROCESS):
             self._make_json_request(url, data=self.snap_payment_data)
         self.assertEqual(signature_check_mock.call_count, 1)

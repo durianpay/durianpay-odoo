@@ -12,7 +12,7 @@ from odoo import http
 from odoo.exceptions import ValidationError
 from odoo.http import request
 
-from odoo.addons.payment_durianpay_18 import const
+from odoo.addons.payment_durianpay import const
 
 
 _logger = logging.getLogger(__name__)
@@ -52,14 +52,18 @@ class DurianpayController(http.Controller):
         )
 
         try:
-            tx_sudo = request.env['payment.transaction'].sudo()._get_tx_from_notification_data(
+            tx_sudo = request.env['payment.transaction'].sudo()._search_by_reference(
                 'durianpay', notification_data
             )
+            if not tx_sudo:
+                _logger.warning("No transaction matching the notification; skipping to acknowledge.")
+                return request.make_json_response('')
+
             # Verify the authenticity of the notification before processing it.
             self._verify_notification(tx_sudo, data, notification_data, raw_body, is_snap)
 
-            # Handle the notification data.
-            tx_sudo._handle_notification_data('durianpay', notification_data)
+            # Process the notification data.
+            tx_sudo._process('durianpay', notification_data)
         except ValidationError:
             _logger.exception("Unable to handle notification data; skipping to acknowledge.")
 

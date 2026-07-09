@@ -1,17 +1,8 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import logging
-import pprint
+from odoo import fields, models
 
-import requests
-
-from odoo import _, fields, models
-from odoo.exceptions import ValidationError
-
-from odoo.addons.payment_durianpay_18 import const
-
-
-_logger = logging.getLogger(__name__)
+from odoo.addons.payment_durianpay import const
 
 
 class PaymentProvider(models.Model):
@@ -39,6 +30,13 @@ class PaymentProvider(models.Model):
         string="Durianpay SNAP Public Key",
         help="Durianpay's RSA public key (PEM format) used to verify the X-SIGNATURE of SNAP "
              "callbacks. Use the sandbox or live key matching your secret key.",
+        groups='base.group_system',
+    )
+    durianpay_api_url = fields.Char(
+        string="Durianpay API URL",
+        help="Base URL of the Durianpay API (e.g. %s). Leave empty to select automatically "
+             "between the live and sandbox URLs based on the secret key's `dp_test` prefix."
+             % const.DEFAULT_API_URL,
         groups='base.group_system',
     )
     durianpay_link_base_url = fields.Char(
@@ -79,60 +77,80 @@ class PaymentProvider(models.Model):
         return base_url if base_url.endswith('/') else f'{base_url}/'
 
     def _durianpay_get_api_url(self):
-        """ Return the API base URL based on the configured secret key.
+        """ Return the API base URL to use for requests.
 
-        Durianpay routes `dp_test`-prefixed keys to the sandbox environment.
+        Uses the configured override if set; otherwise routes `dp_test`-prefixed keys to the
+        sandbox environment and other keys to production.
 
-        :return: The base API URL.
+        :return: The base API URL, without a trailing slash.
         :rtype: str
         """
         self.ensure_one()
+        if self.durianpay_api_url:
+            return self.durianpay_api_url.strip().rstrip('/')
         if (self.durianpay_secret_key or '').startswith('dp_test'):
-            return 'https://api-sandbox.durianpay.id'
-        return 'https://api.durianpay.id'
+            return const.DEFAULT_SANDBOX_API_URL
+        return const.DEFAULT_API_URL
 
-    def _durianpay_make_request(self, endpoint, payload=None, method='POST'):
-        """ Make a request to Durianpay API and return the JSON-formatted content of the response.
+    # === REQUEST HELPERS === #
 
-        Note: self.ensure_one()
+    def _build_request_url(self, endpoint, **kwargs):
+        """ Override of `payment` to build the request URL. """
+        if self.code != 'durianpay':
+            return super()._build_request_url(endpoint, **kwargs)
+        return f'{self._durianpay_get_api_url()}/{endpoint}'
 
-        :param str endpoint: The endpoint to be reached by the request.
-        :param dict payload: The payload of the request.
-        :param str method: The HTTP method of the request.
-        :return: The JSON-formatted content of the response.
-        :rtype: dict
-        :raise ValidationError: If an HTTP error occurs.
+    def _build_request_auth(self, **kwargs):
+        """ Override of `payment` to build the request HTTP Basic auth.
+
+        Durianpay authenticates with the secret key as the username and an empty password.
         """
-        self.ensure_one()
+        if self.code != 'durianpay':
+            return super()._build_request_auth(**kwargs)
+        return (self.durianpay_secret_key, '')
 
-        url = f'{self._durianpay_get_api_url()}/{endpoint}'
-        # Durianpay authenticates with HTTP Basic auth: the secret key as the username and an
-        # empty password.
-        auth = (self.durianpay_secret_key, '')
+    def _parse_response_error(self, response):
+        """ Override of `payment` to extract the error message from a Durianpay response. """
+        if self.code != 'durianpay':
+            return super()._parse_response_error(response)
+        return self._durianpay_extract_error(response)
+
+    @staticmethod
+    def _durianpay_extract_error(response):
+        """ Extract a human-readable error message from a Durianpay error response.
+
+        Durianpay error bodies are not uniform: `error` may be a dict (`{code, description}`),
+        a plain string, and the body may also carry `message`/`errors`. This handles all shapes
+        and falls back to the raw text.
+
+        :param response: The `requests` response object.
+        :return: The best-effort error message.
+        :rtype: str
+        """
         try:
-            if method == 'GET':
-                response = requests.get(url, params=payload, auth=auth, timeout=10)
-            else:
-                response = requests.post(url, json=payload, auth=auth, timeout=10)
-            response.raise_for_status()
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            _logger.exception("Unable to reach endpoint at %s", url)
-            raise ValidationError(
-                "Durianpay: " + _("Could not establish the connection to the API.")
-            )
-        except requests.exceptions.HTTPError as err:
-            try:
-                error = err.response.json().get('error', {})
-                error_message = error.get('message') or error.get('description') or err.response.text
-            except ValueError:
-                error_message = err.response.text
-            _logger.exception(
-                "Invalid API request at %s with data:\n%s", url, pprint.pformat(payload)
-            )
-            raise ValidationError(
-                "Durianpay: " + _(
-                    "The communication with the API failed. Durianpay gave us the following"
-                    " information: '%s'", error_message
+            body = response.json()
+        except ValueError:
+            return response.text
+
+        if isinstance(body, str):
+            return body
+        if isinstance(body, dict):
+            error = body.get('error')
+            if isinstance(error, dict):
+                return (
+                    error.get('message')
+                    or error.get('description')
+                    or error.get('code')
+                    or response.text
                 )
+            # `errors` is often a list of field-level validation messages.
+            errors = body.get('errors')
+            if isinstance(errors, (list, tuple)) and errors:
+                return '; '.join(str(e) for e in errors)
+            return (
+                (error if isinstance(error, str) else None)
+                or body.get('message')
+                or body.get('error_code')
+                or response.text
             )
-        return response.json()
+        return response.text
