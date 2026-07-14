@@ -12,7 +12,7 @@ from odoo import http
 from odoo.exceptions import ValidationError
 from odoo.http import request
 
-from odoo.addons.payment_durianpay_18 import const
+from odoo.addons.payment_durianpay import const
 
 
 _logger = logging.getLogger(__name__)

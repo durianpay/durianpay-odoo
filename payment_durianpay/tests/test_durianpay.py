@@ -7,14 +7,14 @@ from odoo.tests import tagged
 from odoo.tools import mute_logger
 
 from odoo.addons.payment.tests.http_common import PaymentHttpCommon
-from odoo.addons.payment_durianpay_18 import const
-from odoo.addons.payment_durianpay_18.controllers.main import DurianpayController
-from odoo.addons.payment_durianpay_18.tests.common import DurianpayCommon
+from odoo.addons.payment_durianpay import const
+from odoo.addons.payment_durianpay.controllers.main import DurianpayController
+from odoo.addons.payment_durianpay.tests.common import DurianpayCommon
 
 
 # Odoo 18: API calls go through _durianpay_make_request on the provider model.
 _MAKE_REQUEST = (
-    'odoo.addons.payment_durianpay_18.models.payment_provider.PaymentProvider._durianpay_make_request'
+    'odoo.addons.payment_durianpay.models.payment_provider.PaymentProvider._durianpay_make_request'
 )
 
 # Base-class path for `_handle_notification_data` defined by the `payment` framework (Odoo 18).
@@ -117,7 +117,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         )
         self.assertEqual(found, tx)
 
-    @mute_logger('odoo.addons.payment_durianpay_18.models.payment_transaction')
+    @mute_logger('odoo.addons.payment_durianpay.models.payment_transaction')
     def test_get_tx_from_notification_data_missing_raises(self):
         """ Test that an unmatched reference raises a ValidationError. """
         with self.assertRaises(ValidationError):
@@ -125,7 +125,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
                 'durianpay', {'order_ref_id': 'does-not-exist'}
             )
 
-    @mute_logger('odoo.addons.payment_durianpay_18.models.payment_transaction')
+    @mute_logger('odoo.addons.payment_durianpay.models.payment_transaction')
     def test_get_tx_from_notification_data_missing_reference_raises(self):
         """ Test that missing reference fields raise a ValidationError. """
         with self.assertRaises(ValidationError):
@@ -179,7 +179,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
     # === TESTS: WEBHOOK (HTTP) === #
 
     @mute_logger(
-        'odoo.addons.payment_durianpay_18.controllers.main',
+        'odoo.addons.payment_durianpay.controllers.main',
         'odoo.addons.payment.models.payment_transaction',
     )
     def test_legacy_webhook_confirms_transaction(self):
@@ -189,7 +189,7 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         self._make_json_request(url, data=self.legacy_payment_data)
         self.assertEqual(tx.state, 'done')
 
-    @mute_logger('odoo.addons.payment_durianpay_18.controllers.main')
+    @mute_logger('odoo.addons.payment_durianpay.controllers.main')
     def test_snap_webhook_triggers_signature_check(self):
         """ Test that a SNAP callback triggers the RSA signature verification. """
         self.provider.durianpay_webhook_type = 'snap'

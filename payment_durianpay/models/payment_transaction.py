@@ -7,7 +7,7 @@ from odoo import _, models
 from odoo.exceptions import ValidationError
 from odoo.tools import float_round
 
-from odoo.addons.payment_durianpay_18 import const
+from odoo.addons.payment_durianpay import const
 
 
 _logger = logging.getLogger(__name__)
