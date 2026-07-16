@@ -41,6 +41,12 @@ class PaymentProvider(models.Model):
              "callbacks. Use the sandbox or live key matching your secret key.",
         groups='base.group_system',
     )
+    durianpay_api_url = fields.Char(
+        string="Durianpay API URL",
+        help="Override the API base URL. Leave empty to auto-select based on the secret key "
+             "prefix (sandbox for `dp_test` keys, production otherwise).",
+        groups='base.group_system',
+    )
     durianpay_link_base_url = fields.Char(
         string="Durianpay Payment Link Base URL",
         help="Base URL prepended to the payment link code returned by the API. Leave empty to "
@@ -87,6 +93,8 @@ class PaymentProvider(models.Model):
         :rtype: str
         """
         self.ensure_one()
+        if self.durianpay_api_url:
+            return self.durianpay_api_url.rstrip('/')
         if (self.durianpay_secret_key or '').startswith('dp_test'):
             return 'https://api-sandbox.durianpay.id'
         return 'https://api.durianpay.id'
