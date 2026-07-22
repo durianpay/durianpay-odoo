@@ -50,7 +50,9 @@ class PaymentProvider(models.Model):
     durianpay_link_base_url = fields.Char(
         string="Durianpay Payment Link Base URL",
         help="Base URL prepended to the payment link code returned by the API. Leave empty to "
-             "use the default (%s)." % const.DEFAULT_LINK_BASE_URL,
+             "auto-select based on the secret key prefix (%s for sandbox, %s otherwise)." % (
+                 const.DEFAULT_SANDBOX_LINK_BASE_URL, const.DEFAULT_LINK_BASE_URL,
+             ),
         groups='base.group_system',
     )
 
@@ -75,13 +77,19 @@ class PaymentProvider(models.Model):
     def _durianpay_get_link_base_url(self):
         """ Return the base URL used to build hosted payment links.
 
-        Falls back to the default when no override is configured.
+        Falls back to the sandbox or production default (based on the secret key prefix) when
+        no override is configured.
 
         :return: The payment link base URL, with a trailing slash.
         :rtype: str
         """
         self.ensure_one()
-        base_url = (self.durianpay_link_base_url or const.DEFAULT_LINK_BASE_URL).strip()
+        if self.durianpay_link_base_url:
+            base_url = self.durianpay_link_base_url.strip()
+        elif (self.durianpay_secret_key or '').startswith('dp_test'):
+            base_url = const.DEFAULT_SANDBOX_LINK_BASE_URL
+        else:
+            base_url = const.DEFAULT_LINK_BASE_URL
         return base_url if base_url.endswith('/') else f'{base_url}/'
 
     def _durianpay_get_api_url(self):
