@@ -99,6 +99,22 @@ class DurianpayTest(DurianpayCommon, PaymentHttpCommon):
         self.provider.durianpay_secret_key = 'dp_live_key'
         self.assertEqual(self.provider._durianpay_get_api_url(), 'https://api.durianpay.id')
 
+    def test_link_base_url_selection(self):
+        """ Test the resolution of the payment link base URL based on the key prefix. """
+        # `dp_test`-prefixed key targets the sandbox link domain.
+        self.provider.durianpay_secret_key = 'dp_test_key'
+        self.assertEqual(
+            self.provider._durianpay_get_link_base_url(),
+            'https://links-sandbox.durianpay.id/payment/',
+        )
+
+        # A live key targets the production link domain.
+        self.provider.durianpay_secret_key = 'dp_live_key'
+        self.assertEqual(
+            self.provider._durianpay_get_link_base_url(),
+            'https://links.durianpay.id/payment/',
+        )
+
     # === TESTS: GET TX FROM NOTIFICATION DATA === #
 
     def test_get_tx_from_notification_data_legacy(self):

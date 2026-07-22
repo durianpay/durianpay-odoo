@@ -13,9 +13,11 @@ CURRENCY_DECIMALS = {
     'IDR': 0,
 }
 
-# The default base domain serving hosted payment links when the API returns a bare code.
-# Overridable per provider via `durianpay_link_base_url`.
+# The default base domains serving hosted payment links when the API returns a bare code.
+# Selected based on the secret key prefix (sandbox for `dp_test` keys); overridable per
+# provider via `durianpay_link_base_url`.
 DEFAULT_LINK_BASE_URL = 'https://links.durianpay.id/payment/'
+DEFAULT_SANDBOX_LINK_BASE_URL = 'https://links-sandbox.durianpay.id/payment/'
 
 # The codes of the payment methods to activate when Durianpay is activated.
 # The hosted payment link surfaces every method enabled on the merchant's
